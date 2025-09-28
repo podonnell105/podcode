@@ -4,7 +4,6 @@ import { ReadTool } from './read.js';
 import { WriteTool } from './write.js';
 import { EditTool } from './edit.js';
 import { SystemCheckTool } from './system.js';
-import { dynamicPlannerTool } from './dynamic-planner.js';
 import { CLIDiscoveryTool } from './cli-discovery.js';
 import { MemorySearchTool, MemoryStatsTool, MemoryListTool } from './memory.js';
 import { CommandChainTool } from './command-chain.js';
@@ -16,7 +15,6 @@ import { CodeAnalysisTool } from './code-analysis.js';
 import { GrepTool } from './grep.js';
 import { FileSearchTool } from './file-search.js';
 import { WebSearchTool } from './web-search.js';
-import { stepExecutorTool } from './step-executor.js';
 import type { ChatCompletionTool } from 'openai/resources/chat/completions';
 
 export class ToolRegistry {
@@ -29,7 +27,6 @@ export class ToolRegistry {
     this.register(new WriteTool());
     this.register(new EditTool());
     this.register(new SystemCheckTool());
-    this.register(dynamicPlannerTool);
     this.register(new CLIDiscoveryTool());
     
     // Register memory tools
@@ -49,7 +46,6 @@ export class ToolRegistry {
     this.register(new GrepTool());
     this.register(new FileSearchTool());
     this.register(new WebSearchTool());
-    this.register(stepExecutorTool);
   }
 
   register(tool: Tool): void {

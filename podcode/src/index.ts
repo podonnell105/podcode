@@ -19,7 +19,6 @@ import { generateSystemPrompt, getEnvironmentDetails } from './system-prompt.js'
 import { displayLogo } from './logo.js';
 import { AIOrchestrator } from './orchestrator.js';
 import { displayScrollableOutput } from './utils/terminal-output.js';
-import { dynamicPlannerTool } from './tools/dynamic-planner.js';
 import { UIFormatter } from './utils/ui-formatter.js';
 
 // Helper function to update plan after tool failure (Claude Code style)
