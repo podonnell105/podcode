@@ -3,13 +3,26 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 export interface ToolExecution {
   toolName: string;
   args: any;
+  argsHash: string;
   result: {
     success: boolean;
     output: string;
     error?: string;
   };
   timestamp: Date;
-  duration?: number;
+  duration: number;
+  exitCode?: number;
+  bytesWritten?: number;
+  patchStats?: {
+    linesAdded: number;
+    linesRemoved: number;
+    filesModified: number;
+  };
+  ciResult?: {
+    success: boolean;
+    failedStep?: string;
+    checksRun: string[];
+  };
 }
 
 export interface SessionMessage {

@@ -20,8 +20,8 @@ export class BashTool implements Tool {
   async execute(args: z.infer<typeof BashParametersSchema>, context: ToolContext): Promise<ToolResult> {
     const { command, timeout = 30, scrollable = false, interactive = false } = args;
     
-    // Show the command being executed
-    console.log(chalk.gray(`💻 Running: ${command}${interactive ? ' (interactive mode)' : ''}`));
+    // Show clean command execution like Cursor
+    console.log(chalk.gray(`Running: ${command}`));
     
     // If interactive mode is enabled, use the interactive terminal
     if (interactive) {

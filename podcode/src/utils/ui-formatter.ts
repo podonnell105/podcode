@@ -176,4 +176,92 @@ export class UIFormatter {
     
     return this.createBox(content, 'Welcome', 'green');
   }
+
+  /**
+   * Creates a formatted table display for execution plans
+   */
+  static createPlanTable(plan: any): string {
+    const table = [
+      chalk.cyan('┌─ Plan Details ──────────────────────────────────────────┐'),
+      `│ ID: ${plan.planId || 'N/A'}`,
+      `│ Title: ${plan.title || 'Untitled Plan'}`,
+      `│ Steps: ${plan.steps?.length || 0}`,
+      chalk.cyan('├─ Execution Steps ───────────────────────────────────────┤')
+    ];
+    
+    if (plan.steps && Array.isArray(plan.steps)) {
+      plan.steps.forEach((step: any, idx: number) => {
+        const stepNum = idx + 1;
+        if (typeof step === 'string') {
+          // Handle legacy string format
+          table.push(`│ ${stepNum}. ${step}`);
+        } else if (step.id && step.tool) {
+          // Handle new JSON schema format
+          const why = step.args?.why || 'Execute step';
+          table.push(`│ ${stepNum}. ${step.id}: ${step.tool} - ${why}`);
+        } else {
+          table.push(`│ ${stepNum}. Unknown step format`);
+        }
+      });
+    } else {
+      table.push('│ No steps defined');
+    }
+    
+    if (plan.success_criteria && Array.isArray(plan.success_criteria)) {
+      table.push(chalk.cyan('├─ Success Criteria ──────────────────────────────────────┤'));
+      plan.success_criteria.forEach((criterion: string) => {
+        table.push(`│ ✓ ${criterion}`);
+      });
+    }
+    
+    table.push(chalk.cyan('└─────────────────────────────────────────────────────────┘'));
+    return table.join('\n');
+  }
+
+  // ========== MINIMAL / CLAUDE-CODE STYLE FORMATTERS ==========
+  
+  /**
+   * Minimal tool execution message (ClaudeCode style)
+   */
+  static minimal_toolExecution(toolName: string, command?: string): string {
+    if (toolName === 'bash' && command) {
+      return chalk.gray(`Running: ${command}`);
+    }
+    return chalk.gray(`Using ${toolName}`);
+  }
+
+  /**
+   * Minimal success message
+   */
+  static minimal_success(message?: string): string {
+    return chalk.green(`✓ ${message || 'Completed'}`);
+  }
+
+  /**
+   * Minimal error message (no box, just the error)
+   */
+  static minimal_error(error: string): string {
+    return chalk.red(error);
+  }
+
+  /**
+   * Minimal step indicator
+   */
+  static minimal_step(stepNum: number, total: number, description: string): string {
+    return chalk.cyan(`[${stepNum}/${total}] ${description}`);
+  }
+
+  /**
+   * Minimal output display (raw, no box)
+   */
+  static minimal_output(output: string): string {
+    return output;
+  }
+
+  /**
+   * Inline decision (no box)
+   */
+  static minimal_decision(action: string, reason: string): string {
+    return chalk.gray(`→ ${action}: ${reason}`);
+  }
 }

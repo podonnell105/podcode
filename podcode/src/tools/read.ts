@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, resolve } from 'path';
 import { Tool, ToolContext, ToolResult } from './types.js';
+import { validatePathOrError } from './security.js';
 
 const ReadParametersSchema = z.object({
   path: z.string().describe('Path to the file to read'),
@@ -16,6 +17,16 @@ export class ReadTool implements Tool {
 
   async execute(args: z.infer<typeof ReadParametersSchema>, context: ToolContext): Promise<ToolResult> {
     const { path, startLine, endLine } = args;
+    
+    // Security validation - check if path is safe
+    const pathValidation = validatePathOrError(path, context.workingDirectory);
+    if (!pathValidation.success) {
+      return {
+        success: false,
+        output: '',
+        error: pathValidation.error
+      };
+    }
     
     try {
       const fullPath = resolve(context.workingDirectory, path);

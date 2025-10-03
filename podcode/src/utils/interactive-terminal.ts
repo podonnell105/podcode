@@ -74,8 +74,6 @@ export class InteractiveTerminal {
    * @returns A promise that resolves with the result of the command
    */
   async execute(command: string, args: string[] = []): Promise<InteractiveTerminalResult> {
-    console.log(chalk.gray(`💻 Running interactively: ${command} ${args.join(' ')}`));
-
     return new Promise((resolve) => {
       // Set up readline interface for user input
       this.rl = readline.createInterface({

@@ -2,9 +2,8 @@ import { AIClient } from './client.js';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 export interface OrchestratorDecision {
-  action: 'respond' | 'plan' | 'execute' | 'update_plan';
+  action: 'respond' | 'execute';
   reason: string;
-  planId?: string;
   shouldContinue?: boolean;
 }
 
@@ -19,10 +18,28 @@ export interface PlanContext {
   updatedAt?: Date;
 }
 
+export interface PlanBudgets {
+  max_steps?: number;
+  max_updates?: number;
+  timeout_s?: number;
+}
+
+export interface PlanSummary {
+  planId: string;
+  title: string;
+  description: string;
+  plan: string;
+  steps: string[];
+  success_criteria: string[];
+  budgets?: PlanBudgets;
+  telemetry?: string[];
+}
+
 export class AIOrchestrator {
   private aiClient: AIClient;
   private activePlans: Map<string, PlanContext> = new Map();
   private conversationHistory: ChatCompletionMessageParam[] = [];
+  private badPayloadsLogged: Set<string> = new Set();
 
   constructor(aiClient: AIClient) {
     this.aiClient = aiClient;
@@ -58,74 +75,89 @@ export class AIOrchestrator {
     context: string,
     availableTools: string[],
     workingDirectory: string
-  ): Promise<{ planId: string; title: string; plan: string; steps: string[] }> {
+  ): Promise<PlanSummary> {
     const planId = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    const planPrompt = `You are an AI planning assistant. Create a detailed, specific, and executable plan for the user's request.
+    const planPrompt = `You are an AI planning assistant. You MUST respond with ONLY valid JSON matching the exact schema below. Any deviation will be rejected.
 
 USER REQUEST: ${userRequest}
 CONTEXT: ${context}
 AVAILABLE TOOLS: ${availableTools.join(', ')}
 WORKING DIRECTORY: ${workingDirectory}
 
-CRITICAL REQUIREMENTS FOR PLAN GENERATION:
-1. Each step MUST be HIGHLY SPECIFIC and directly executable by the AI
-2. Include exact commands, file paths, and tool names that will be used
-3. Focus on concrete actions, not vague descriptions
-4. Research thoroughly before creating steps - don't assume availability of resources
-5. If credentials are needed, include specific steps to locate or create them
-6. For authentication tasks, include exact command syntax
-7. Prefer bash tool with specific commands over generic descriptions
-8. Include error handling and verification steps
-9. Break complex operations into smaller, manageable steps
-10. NEVER include steps that rely on resources you haven't verified exist
-
-Create a JSON response with:
+REQUIRED JSON SCHEMA (respond with EXACTLY this structure or be rejected):
 {
-  "planId": "${planId}",
-  "title": "Specific, action-oriented plan title",
-  "description": "Detailed description of exactly what will be accomplished with specific tools and commands",
+  "planId": "<string>",
+  "title": "<string>",
+  "description": "<string>",
+  "success_criteria": ["<cli or file-state checks>"],
   "steps": [
-    "Step 1: Use bash tool to run 'specific command with exact syntax' to accomplish X",
-    "Step 2: Use read_file tool to check 'specific/file/path' for required configuration",
-    "Step 3: Use bash tool to execute 'specific authentication command with exact parameters'"
+    {
+      "id": "s1",
+      "tool": "<one of registry tools>",
+      "args": { /* fully specified; includes 'why' */ },
+      "depends_on": [],
+      "retries": 1,
+      "rollback": "<command or patch name>"
+    }
   ],
-  "estimatedDuration": "5-10 minutes",
-  "complexity": "simple|medium|complex"
+  "budgets": { "max_steps": ${parseInt(process.env.PODCODE_MAX_STEPS || '20')}, "max_updates": ${parseInt(process.env.PODCODE_MAX_UPDATES || '2')}, "timeout_s": ${parseInt(process.env.PODCODE_TIMEOUT_S || '600')} },
+  "telemetry": ["step_latency","exit_code","patch_size"]
 }
 
-EXAMPLE OF GOOD STEP: "Use bash tool to run 'supabase login --token=your-token' to authenticate with Supabase CLI"
-EXAMPLE OF BAD STEP: "Log into Supabase using credentials"
+CRITICAL REQUIREMENTS:
+1. planId must be: "${planId}"
+2. tool field must be one of: ${availableTools.join(', ')}
+3. args must include a "why" field explaining the tool choice
+4. success_criteria must be CLI commands or file checks that verify completion
+5. JSON MUST be valid - any syntax error will cause rejection and re-generation
 
-Make every step extremely specific, actionable, and directly executable by the AI.`;
+RESPOND WITH ONLY THE JSON OBJECT. NO OTHER TEXT.`;
 
-    try {
-      const response = await this.aiClient.chat([{
-        role: 'system',
-        content: planPrompt
-      }], [], 'none');
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const response = await this.aiClient.chat([{
+          role: 'system',
+          content: planPrompt
+        }], [], 'none');
 
-      const planData = this.parsePlanResponse(response.choices[0].message.content || '');
-      
-      // Store plan context
-      this.activePlans.set(planId, {
-        planId,
-        currentStep: 0,
-        totalSteps: planData.steps.length,
-        status: 'active',
-        errors: [],
-        newRequirements: []
-      });
+        const planData = this.parsePlanResponseStrict(response.choices[0].message.content || '', availableTools);
+        
+        // Store plan context
+        this.activePlans.set(planId, {
+          planId,
+          currentStep: 0,
+          totalSteps: planData.steps.length,
+          status: 'active',
+          errors: [],
+          newRequirements: []
+        });
 
-      return {
-        planId,
-        title: planData.title,
-        plan: planData.description,
-        steps: planData.steps
-      };
-    } catch (error) {
-      throw new Error(`Failed to generate plan: ${error instanceof Error ? error.message : String(error)}`);
+        const summarizedSteps = planData.steps.map((step: any) => `${step.id}: Use ${step.tool} tool - ${step.args.why || 'execute step'}`);
+
+        return {
+          planId,
+          title: planData.title,
+          description: planData.description,
+          plan: JSON.stringify(planData),
+          steps: summarizedSteps,
+          success_criteria: planData.success_criteria,
+          budgets: planData.budgets,
+          telemetry: planData.telemetry
+        };
+      } catch (error) {
+        attempts++;
+        if (attempts >= maxAttempts) {
+          throw new Error(`Failed to generate valid plan after ${maxAttempts} attempts: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        // Continue to retry with the same prompt
+      }
     }
+    
+    throw new Error('Failed to generate plan');
   }
 
   async updatePlan(
@@ -143,51 +175,49 @@ Make every step extremely specific, actionable, and directly executable by the A
     planContext.errors = [...planContext.errors, ...errors];
     planContext.newRequirements = [...planContext.newRequirements, ...newRequirements];
 
-    // Simple logic for plan updates
+    // Check for repeated errors to trigger alternative approaches
+    const errorCounts = new Map<string, number>();
+    planContext.errors.forEach(error => {
+      const count = errorCounts.get(error) || 0;
+      errorCounts.set(error, count + 1);
+    });
+    
+    const hasRepeatedError = Array.from(errorCounts.values()).some(count => count >= 2);
+
+    // Only update if there are errors or new requirements
     if (errors.length > 0 || newRequirements.length > 0) {
-      const updatePrompt = `The current plan execution encountered issues. Create a SPECIFIC and DIRECTLY EXECUTABLE alternative plan.
+      const updatePrompt = `You are a strict plan reflector. You MUST respond with ONLY valid JSON matching one of the exact schemas below.
 
 CURRENT PLAN ID: ${planId}
 EXECUTION RESULTS: ${executionResults}
 ERRORS: ${errors.join(', ')}
 NEW REQUIREMENTS: ${newRequirements.join(', ')}
+REPEATED ERRORS: ${hasRepeatedError ? 'YES - must use alternative tools/args' : 'NO'}
 
-CRITICAL REQUIREMENTS FOR PLAN UPDATES:
-1. Each step MUST be HIGHLY SPECIFIC with exact commands and tool names
-2. DO NOT repeat steps that have already failed - create true alternatives
-3. Include detailed error handling and verification in each step
-4. Focus on concrete, executable actions with exact syntax
-5. If a resource wasn't found, don't assume it exists elsewhere - create it or use an alternative approach
-6. For authentication failures, provide multiple authentication methods with exact commands
-7. Always include verification steps after critical operations
-8. Use bash tool with specific commands for direct execution
+STRICT RESPONSE SCHEMAS (choose one):
 
-Generate alternative approaches for failed tools:
-- If file not found, check alternative locations OR create the file with necessary content
-- If MCP tools fail, use direct bash commands with exact syntax
-- If CLI tools fail, provide alternative commands with different parameters
-- If authentication fails, try alternative authentication methods with exact command syntax
-- Always provide concrete, executable fallback options
+Schema 1 - No update needed:
+{"updated":false,"reason":"<why>"}
 
-Provide a JSON response:
-{
-  "updated": true,
-  "newSteps": [
-    "Step 1: Use bash tool to run 'specific alternative command' to accomplish X",
-    "Step 2: Use write_file tool to create 'specific/file/path' with required configuration",
-    "Step 3: Use bash tool to execute 'specific alternative authentication command'"
-  ],
-  "reason": "Updated plan with specific, executable alternative approaches"
-}
+Schema 2 - Update with new steps:
+{"updated":true,"newSteps":[
+  {
+    "id": "s1",
+    "tool": "<registry tool>",
+    "args": {"why": "<reason>", /* other args */},
+    "depends_on": [],
+    "retries": 1,
+    "rollback": "<command or patch name>"
+  }
+],"reason":"<root cause + alt path>"}
 
-EXAMPLE OF GOOD STEP: "Use bash tool to run 'supabase login --interactive' to start interactive authentication with Supabase CLI"
-EXAMPLE OF BAD STEP: "Try alternative login method for Supabase"
-
-If no update is needed, return:
-{
-  "updated": false,
-  "reason": "Plan is still valid"
-}`;
+RULES:
+- If same error twice → MUST replan with alternative tool/args
+- Change at most 3 steps
+- Keep existing budgets 
+- newSteps must use same schema as original planner
+- If updated=true, newSteps is required and must be array
+- RESPOND WITH ONLY THE JSON OBJECT. NO OTHER TEXT.`;
 
       try {
         const response = await this.aiClient.chat([{
@@ -195,20 +225,20 @@ If no update is needed, return:
           content: updatePrompt
         }], [], 'none');
 
-        const updateData = this.parseUpdateResponse(response.choices[0].message.content || '');
+        const updateData = this.parseUpdateResponseStrict(response.choices[0].message.content || '');
         
         if (updateData.updated && updateData.newSteps && updateData.newSteps.length > 0) {
+          // Validate newSteps schema matches original planner
+          this.validateStepsSchema(updateData.newSteps);
+          
+          // Enforce max 3 steps rule
+          if (updateData.newSteps.length > 3) {
+            updateData.newSteps = updateData.newSteps.slice(0, 3);
+          }
+          
           // Store the updated steps in the plan context
           planContext.totalSteps = updateData.newSteps.length;
           planContext.currentStep = 0; // Reset to beginning of updated plan
-          
-          // Create a new plan object with the updated steps
-          const updatedPlanData = {
-            planId: planId,
-            title: `Updated plan: ${planId}`,
-            description: `Updated plan after encountering errors: ${executionResults}`,
-            steps: updateData.newSteps
-          };
           
           // Store the updated plan in the active plans
           this.activePlans.set(planId, {
@@ -216,11 +246,25 @@ If no update is needed, return:
             status: 'active',
             updatedAt: new Date()
           });
+          
+          // Convert steps to string format for return value
+          const stepStrings = updateData.newSteps.map((step: any) => 
+            `${step.id}: Use ${step.tool} tool - ${step.args.why || 'execute step'}`
+          );
+          
+          return {
+            updated: true,
+            newSteps: stepStrings,
+            reason: updateData.reason
+          };
         }
 
-        return updateData;
+        return {
+          updated: updateData.updated,
+          reason: updateData.reason
+        };
       } catch (error) {
-        return { updated: false, reason: 'Failed to update plan' };
+        return { updated: false, reason: 'Failed to parse update response' };
       }
     }
 
@@ -239,56 +283,48 @@ If no update is needed, return:
   }
 
   private buildDecisionPrompt(userInput: string, availableTools: string[], workingDirectory: string): string {
-    return `You are an AI orchestrator that decides how to handle user requests. Analyze the user input and decide the best action.
+    return `You are an AI orchestrator that decides how to handle user requests. You MUST respond with ONLY valid JSON matching the exact format below.
 
 AVAILABLE TOOLS: ${availableTools.join(', ')}
 WORKING DIRECTORY: ${workingDirectory}
 
-ACTIONS AVAILABLE:
-- "respond": Conversational response (greetings, questions, explanations, discussions)
-- "execute": Execute tools directly for tasks that can be completed immediately
-- "plan": Create a new execution plan for complex multi-step tasks
-- "update_plan": Update an existing plan based on new information
+REQUIRED JSON FORMAT (respond with EXACTLY this structure):
+{"action":"respond|execute","reason":"<short>"}
 
-IMPORTANT: Be conversational and helpful. Always explain what you're doing and why. Use TodoWrite tools frequently for task management.
+ACTIONS:
+- "respond": Conversational response (greetings, questions, explanations, thinking out loud)
+- "execute": Execute tools directly (always prefer this for any actionable request)
 
-PRIORITY: For service-specific tasks, prioritize relevant MCP tools over generic CLI tools.
+IMPORTANT: 
+- Default to "execute" for any actionable request
+- You'll decide which tools to call conversationally as you go
+- There is no planning phase - just execute tools as needed
+- If a tool fails, you'll see the error and can try a different approach
 
-Respond with ONLY a JSON object:
-{
-  "action": "respond|execute|plan|update_plan",
-  "reason": "Brief explanation of why this action was chosen"
-}
-
-Examples:
-- "hi" → {"action": "respond", "reason": "Simple greeting"}
-- "build a todo app" → {"action": "plan", "reason": "Complex task requiring multiple steps and planning"}
-- "log me into [service]" → {"action": "execute", "reason": "Authentication task - execute directly with explanation"}
-- "list files" → {"action": "execute", "reason": "Simple command that can be executed directly"}
-- "what can you do?" → {"action": "respond", "reason": "Question asking about capabilities"}
-- "fix the error" → {"action": "update_plan", "reason": "Error correction requires plan modification"}`;
+RESPOND WITH ONLY THE JSON OBJECT. NO OTHER TEXT.`;
   }
 
   private parseDecisionResponse(response: string): OrchestratorDecision {
     try {
-      const parsed = JSON.parse(response);
+      const parsed = this.parseJSONRobust(response, 'decision');
+      // Validate action field
+      const validActions = ['respond', 'execute'];
+      if (!parsed.action || !validActions.includes(parsed.action)) {
+        throw new Error('Invalid action');
+      }
       return {
-        action: parsed.action || 'respond',
+        action: parsed.action,
         reason: parsed.reason || 'No reason provided'
       };
     } catch {
-      return this.fallbackDecision('');
+      // Guard: if parse fails, default to execute for actionable requests
+      return { action: 'execute', reason: 'JSON parse failed, defaulting to execute' };
     }
   }
 
   private parsePlanResponse(response: string): any {
     try {
-      // Extract JSON from response (in case there's extra text)
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      throw new Error('No JSON found in response');
+      return this.parseJSONRobust(response, 'plan');
     } catch (error) {
       // Fallback plan if parsing fails
       return {
@@ -302,16 +338,211 @@ Examples:
     }
   }
 
+  private parsePlanResponseStrict(response: string, availableTools: string[]): any {
+    const planData = this.parseJSONRobust(response, 'plan');
+    
+    // Validate required schema fields
+    const requiredFields = ['planId', 'title', 'description', 'success_criteria', 'steps', 'budgets', 'telemetry'];
+    for (const field of requiredFields) {
+      if (!(field in planData)) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
+    
+    // Validate success_criteria is array
+    if (!Array.isArray(planData.success_criteria)) {
+      throw new Error('success_criteria must be an array');
+    }
+    
+    // Validate steps structure
+    if (!Array.isArray(planData.steps)) {
+      throw new Error('steps must be an array');
+    }
+    
+    for (const step of planData.steps) {
+      const stepRequiredFields = ['id', 'tool', 'args', 'depends_on', 'retries', 'rollback'];
+      for (const field of stepRequiredFields) {
+        if (!(field in step)) {
+          throw new Error(`Step missing required field: ${field}`);
+        }
+      }
+      
+      // Validate tool is in available tools
+      if (!availableTools.includes(step.tool)) {
+        throw new Error(`Invalid tool: ${step.tool}. Must be one of: ${availableTools.join(', ')}`);
+      }
+      
+      // Validate args has 'why' field
+      if (!step.args || typeof step.args !== 'object' || !('why' in step.args)) {
+        throw new Error(`Step ${step.id} args must include 'why' field`);
+      }
+      
+      // Validate depends_on is array
+      if (!Array.isArray(step.depends_on)) {
+        throw new Error(`Step ${step.id} depends_on must be an array`);
+      }
+    }
+    
+    // Validate budgets structure
+    const budgetRequiredFields = ['max_steps', 'max_updates', 'timeout_s'];
+    for (const field of budgetRequiredFields) {
+      if (!(field in planData.budgets)) {
+        throw new Error(`budgets missing required field: ${field}`);
+      }
+    }
+    
+    // Validate telemetry is array
+    if (!Array.isArray(planData.telemetry)) {
+      throw new Error('telemetry must be an array');
+    }
+    
+    return planData;
+  }
+
   private parseUpdateResponse(response: string): any {
     try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      return { updated: false, reason: 'No JSON found in response' };
+      return this.parseJSONRobust(response, 'update');
     } catch {
       return { updated: false, reason: 'Failed to parse response' };
     }
+  }
+
+  private parseUpdateResponseStrict(response: string): any {
+    const updateData = this.parseJSONRobust(response, 'update');
+    
+    // Validate required fields
+    if (!('updated' in updateData) || typeof updateData.updated !== 'boolean') {
+      throw new Error('Missing or invalid "updated" field');
+    }
+    
+    if (!updateData.reason || typeof updateData.reason !== 'string') {
+      throw new Error('Missing or invalid "reason" field');
+    }
+    
+    // If updated is true, validate newSteps
+    if (updateData.updated) {
+      if (!updateData.newSteps || !Array.isArray(updateData.newSteps)) {
+        throw new Error('When updated=true, newSteps must be an array');
+      }
+      
+      if (updateData.newSteps.length === 0) {
+        throw new Error('When updated=true, newSteps cannot be empty');
+      }
+    }
+    
+    return updateData;
+  }
+
+  private validateStepsSchema(steps: any[]): void {
+    for (const step of steps) {
+      const requiredFields = ['id', 'tool', 'args', 'depends_on', 'retries', 'rollback'];
+      for (const field of requiredFields) {
+        if (!(field in step)) {
+          throw new Error(`Step missing required field: ${field}`);
+        }
+      }
+      
+      // Validate args has 'why' field
+      if (!step.args || typeof step.args !== 'object' || !('why' in step.args)) {
+        throw new Error(`Step ${step.id} args must include 'why' field`);
+      }
+      
+      // Validate depends_on is array
+      if (!Array.isArray(step.depends_on)) {
+        throw new Error(`Step ${step.id} depends_on must be an array`);
+      }
+    }
+  }
+
+  /**
+   * Robust JSON parser that handles garbage around JSON
+   * Tries multiple strategies: largest complete JSON, individual JSON objects, then fallback
+   * Falls back to JSON5 if available, logs bad payloads once per session
+   */
+  private parseJSONRobust(response: string, context: string = 'unknown'): any {
+    try {
+      // Strategy 1: Try to find the largest complete JSON object (first { to last })
+      const firstBrace = response.indexOf('{');
+      const lastBrace = response.lastIndexOf('}');
+      
+      if (firstBrace !== -1 && lastBrace !== -1 && firstBrace < lastBrace) {
+        const jsonString = response.slice(firstBrace, lastBrace + 1);
+        
+        try {
+          return JSON.parse(jsonString);
+        } catch (jsonError) {
+          // Strategy 2: Try individual JSON objects by finding complete { ... } pairs
+          const jsonObjects = this.findCompleteJSONObjects(response);
+          
+          for (const jsonObj of jsonObjects) {
+            try {
+              return JSON.parse(jsonObj);
+            } catch (parseError) {
+              // Try JSON5 for this object
+              try {
+                const JSON5 = require('json5');
+                return JSON5.parse(jsonObj);
+              } catch (json5Error) {
+                continue; // Try next object
+              }
+            }
+          }
+          
+          // Strategy 3: Try JSON5 on the largest JSON
+          try {
+            const JSON5 = require('json5');
+            return JSON5.parse(jsonString);
+          } catch (json5Error) {
+            // Log bad payload once per session
+            const payloadKey = `${context}:${jsonString.substring(0, 100)}`;
+            if (!this.badPayloadsLogged.has(payloadKey)) {
+              console.warn(`⚠️ Bad JSON payload in ${context}:`, jsonString.substring(0, 200) + '...');
+              console.warn(`JSON error:`, jsonError);
+              this.badPayloadsLogged.add(payloadKey);
+            }
+            throw jsonError;
+          }
+        }
+      }
+      
+      throw new Error('No valid JSON braces found');
+    } catch (error) {
+      // Log bad payload once per session
+      const payloadKey = `${context}:${response.substring(0, 100)}`;
+      if (!this.badPayloadsLogged.has(payloadKey)) {
+        console.warn(`⚠️ Failed to parse JSON in ${context}:`, response.substring(0, 200) + '...');
+        console.warn(`Parse error:`, error);
+        this.badPayloadsLogged.add(payloadKey);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Find all complete JSON objects in a string by matching balanced braces
+   */
+  private findCompleteJSONObjects(text: string): string[] {
+    const objects: string[] = [];
+    let braceCount = 0;
+    let startIndex = -1;
+    
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (braceCount === 0) {
+          startIndex = i;
+        }
+        braceCount++;
+      } else if (text[i] === '}') {
+        braceCount--;
+        if (braceCount === 0 && startIndex !== -1) {
+          // Found a complete JSON object
+          objects.push(text.slice(startIndex, i + 1));
+          startIndex = -1;
+        }
+      }
+    }
+    
+    return objects;
   }
 
   private fallbackDecision(userInput: string): OrchestratorDecision {
@@ -327,41 +558,12 @@ Examples:
       return { action: 'respond', reason: 'Question about capabilities' };
     }
     
-    // Authentication tasks - execute directly, don't plan
-    if (input.match(/log.*into|authenticate|login|connect/)) {
-      return { action: 'execute', reason: 'Authentication task - execute directly' };
-    }
-    
-    // Complex tasks requiring planning
-    if (input.match(/^(build|create|make|develop|setup|install|configure|deploy)/)) {
-      return { action: 'plan', reason: 'Complex task requiring planning' };
-    }
-    
-    // Simple commands - execute directly
-    if (input.match(/^(list|show|ls|cat|pwd|cd|grep|find|mkdir|rm|cp|mv)/)) {
-      return { action: 'execute', reason: 'Simple command' };
-    }
-    
-    // Git commands
-    if (input.match(/^git\s+/)) {
-      return { action: 'execute', reason: 'Git command' };
-    }
-    
-    // If user is asking for something to be done (not just asking a question), prefer planning
-    if (input.match(/^(help me|can you|please|do|run|execute)/)) {
-      return { action: 'plan', reason: 'User requesting action to be performed' };
-    }
-    
-    // Default to planning for action-oriented requests, respond for questions
-    if (input.includes('?')) {
+    // Questions without clear action - respond
+    if (input.includes('?') && !input.match(/can you|could you|would you/)) {
       return { action: 'respond', reason: 'Question detected' };
     }
     
-    // Check if it's an authentication request
-    if (input.match(/log.*into|authenticate|login|connect/)) {
-      return { action: 'execute', reason: 'Authentication request - execute directly' };
-    }
-    
-    return { action: 'plan', reason: 'Action-oriented request - default to planning' };
+    // Everything else - execute (AI will decide tools conversationally)
+    return { action: 'execute', reason: 'Actionable request - execute conversationally' };
   }
 }
