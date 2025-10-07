@@ -1,0 +1,33 @@
+{
+  "apiKey": "your-api-key-here",
+  "baseURL": "https://api.openai.com/v1",
+  "model": "gpt-4",
+  "": 1,
+  "workingDirectory": ".",
+  "mcp": {
+    "salesforce": {
+      "enabled": true,
+      "type": "local",
+      "command": ["npx", "-y", "@salesforce/mcp"],
+      "environment": {
+        "SFDX_USE_GENERIC_UNIX_KEYCHAIN": "true",
+        "SFDX_DISABLE_AUTOUPDATE": "true"
+      }
+    },
+    "filesystem": {
+      "enabled": true,
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"],
+      "environment": {}
+    },
+    "custom-remote": {
+      "enabled": false,
+      "type": "remote",
+      "url": "https://your-mcp-server.com/mcp",
+      "headers": {
+        "Authorization": "Bearer your-token"
+      }
+    }
+  }
+}
+

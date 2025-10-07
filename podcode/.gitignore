@@ -2,7 +2,6 @@
 node_modules
 dist
 podcode.json
-podcode.example.json
 SYSTEM_OVERVIEW.md
 PROGRESS.md
 tsconfig.json
@@ -10,3 +9,4 @@ package.json
 package-lock.json
 install.sh
 README.md
+podcode
