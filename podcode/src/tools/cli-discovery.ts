@@ -215,7 +215,7 @@ export class CLIDiscoveryTool implements Tool {
   }
 
   private async runCommand(command: string, context: ToolContext): Promise<ToolResult> {
-    return this.runCommandWithTimeout(command, context, 5000); // 5 second timeout for CLI discovery
+    return this.runCommandWithTimeout(command, context, 15000); // 15 second timeout for CLI discovery (increased from 5s)
   }
 
   private async runCommandWithTimeout(command: string, context: ToolContext, timeoutMs: number): Promise<ToolResult> {
@@ -236,7 +236,7 @@ export class CLIDiscoveryTool implements Tool {
       let stderr = '';
       let resolved = false;
 
-      // Set timeout - much shorter for CLI discovery
+      // Set timeout - increased for complex CLI tools
       const timeout = setTimeout(() => {
         if (!resolved) {
           resolved = true;
@@ -247,7 +247,7 @@ export class CLIDiscoveryTool implements Tool {
             error: `Command timed out after ${timeoutMs}ms`
           });
         }
-      }, Math.min(timeoutMs, 5000)); // Max 5 seconds for CLI discovery
+      }, Math.min(timeoutMs, 15000)); // Max 15 seconds for CLI discovery (increased from 5s)
 
       child.stdout?.on('data', (data) => {
         stdout += data.toString();

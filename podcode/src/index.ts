@@ -261,7 +261,7 @@ async function conversationLoop(
   allTools: any[],
   mcpClient: any,
   aiClient: AIClient,
-  maxIterations: number = 5
+  maxIterations: number = parseInt(process.env.PODCODE_MAX_ITERATIONS || '15')
 ): Promise<void> {
   let iteration = 0;
   
