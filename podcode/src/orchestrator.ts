@@ -85,6 +85,16 @@ CONTEXT: ${context}
 AVAILABLE TOOLS: ${availableTools.join(', ')}
 WORKING DIRECTORY: ${workingDirectory}
 
+PLANNING STRATEGY:
+- If you don't know how to accomplish something, START with web_search steps to gather information
+- You can include multiple web_search steps in parallel to research different aspects
+- After gathering information through web_search, proceed with execution steps
+- Use specific, technical search terms for web_search
+
+Example: If asked to "create a custom field", your plan should:
+1. First step: web_search with search_term like "CLI create custom field command syntax"
+2. After learning the syntax, add steps to execute the actual commands
+
 REQUIRED JSON SCHEMA (respond with EXACTLY this structure or be rejected):
 {
   "planId": "<string>",
@@ -109,8 +119,9 @@ CRITICAL REQUIREMENTS:
 1. planId must be: "${planId}"
 2. tool field must be one of: ${availableTools.join(', ')}
 3. args must include a "why" field explaining the tool choice
-4. success_criteria must be CLI commands or file checks that verify completion
-5. JSON MUST be valid - any syntax error will cause rejection and re-generation
+4. Include web_search steps at the beginning if you need to learn how to accomplish the task
+5. success_criteria must be CLI commands or file checks that verify completion
+6. JSON MUST be valid - any syntax error will cause rejection and re-generation
 
 RESPOND WITH ONLY THE JSON OBJECT. NO OTHER TEXT.`;
 
